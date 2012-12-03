@@ -1,14 +1,18 @@
 #!/usr/bin/python
 
-import sys, os, stat, shutil, shlex, hashlib, collections
+import sys, os, stat, shutil, shlex, hashlib, collections, optparse, time
 join = os.path.join
 
 TIER_CONFIG = join(os.getenv('HOME'), '.config', 'tier.conf')
+TIER_IGNORE = '.tierignore'
+TIER_BACKUP_INFIX = '.tierbk.'
 
 NONE = 0
 FILE = 1
 LINK = 2
 OTHER = 3
+
+global_run_id = '%r.%r' % (time.time(), os.getpid())
 
 def UnpackBits(bits, tiers):
   out = ''
@@ -28,6 +32,13 @@ def TimeAndSize(fn):
   st = os.lstat(fn)
   return int(st.st_mtime), st.st_size
 
+def MakeBackupLink(fn):
+  bk = fn + TIER_BACKUP_INFIX + global_run_id
+  try:
+    os.link(fn, bk)
+  except OSError:
+    pass
+
 def GetType(fn):
   try:
     mode = os.lstat(fn).st_mode
@@ -42,12 +53,16 @@ def GetType(fn):
 
 def AllFilesInTree(t):
   assert t.endswith('/')
-  for path, _, fns in os.walk(t):
+  for path, dirs, fns in os.walk(t):
+    if TIER_IGNORE in fns:
+      dirs[:] = []
+      continue
     assert path.startswith(t)
     path = path[len(t):]
     for fn in fns:
-      fn = join(path, fn)
-      yield fn
+      if TIER_BACKUP_INFIX not in fn:
+        fn = join(path, fn)
+        yield fn
 
 def Fileprint(fn):
   CHUNK = 1024
@@ -62,8 +77,87 @@ def Fileprint(fn):
   s.update(f.read(CHUNK))
   return s.digest()
 
-def FmtInts(ints):
-  return ','.join(map(str, ints))
+
+class Op(object):
+  def __init__(self):
+    pass
+
+  def __str__(self):
+    return 'Abstract op'
+
+  def __repr__(self):
+    return 'Op()'
+
+  def Run(self):
+    raise NotImplementedError
+
+
+class Symlink(Op):
+  def __init__(self, dest, contents, was):
+    self.dest = dest
+    self.contents = contents
+    self.was = was
+
+  def __str__(self):
+    return 'Symlink %s -> %s (was %s)' % (
+        self.dest, self.contents, self.was)
+
+  def __repr__(self):
+    return 'Symlink(%r, %r, %r)' % (
+        self.dest, self.contents, self.was)
+
+  def Run(self):
+    MakeBackupLink(self.dest)
+    tmp = self.dest + '.tmp'
+    try:
+      os.symlink(self.contents, tmp)
+    except OSError, e:
+      if e.errno == 2:
+        os.makedirs(os.path.dirname(tmp))
+        os.symlink(self.contents, tmp)
+      else:
+        raise
+    os.rename(tmp, self.dest)
+
+
+class Copy(Op):
+  def __init__(self, src, dest, was):
+    self.src = src
+    self.dest = dest
+    self.was = was
+
+  def __str__(self):
+    return 'Copy %s -> %s (was %s)' % (
+        self.src, self.dest, self.was)
+
+  def __repr__(self):
+    return 'Copy(%r, %r, %r)' % (
+        self.src, self.dest, self.was)
+
+  def Run(self):
+    MakeBackupLink(self.dest)
+    tmp = self.dest + '.tmp'
+    try:
+      shutil.copy2(self.src, tmp)
+    except OSError, e:
+      if e.errno == 2:
+        os.makedirs(os.path.dirname(tmp))
+        shutil.copy2(self.src, tmp)
+      else:
+        raise
+    os.rename(tmp, self.dest)
+
+
+class MissingFile(Op):
+  def __init__(self, relpath, tps):
+    self.relpath = relpath
+    self.tps = tps
+
+  def __str__(self):
+    return 'Missing file at %s (%s)' % (self.relpath, self.tps)
+
+  def __repr__(self):
+    return 'MissingFile(%r, %r)' % (self.relpath, self.tps)
 
 
 class TierManager(object):
@@ -105,60 +199,75 @@ class TierManager(object):
         full[f] |= (tp << (i * 2))
     return full
 
-  def CheckConsistency(self):
+  def CheckConsistency(self, go):
     tcount = len(self.tiers)
     full = self.FullMap()
     full = full.items()
     full.sort()
     for relpath, bits in full:
+      IT = lambda t: self.InTier(t, relpath)
       tps = UnpackBits(bits, tcount)
-      fixes = []
+      ops = []
       # Find first file (most accessible copy). Above this should be links to
       # this, below this should be identical copies of this.
       ff = tps.find('F')
       if ff < 0:
-        fixes.append('No files exist!')
+        ops.append(MissingFile(relpath, tps))
       else:
         # These should be links to the file at ff.
         for i in xrange(0, ff):
           if tps[i] != 'L':
-            fixes.append('Symlink from %d to %d' % (i, ff))
+            ops.append(Symlink(IT(i), IT(ff), tps[i]))
           else:
-            target = os.readlink(self.InTier(i, relpath))
-            if target != self.InTier(ff, relpath):
-              fixes.append('Change symlink target of %d' % i)
+            target = os.readlink(IT(i))
+            if target != IT(ff):
+              ops.append(Symlink(IT(i), IT(ff), 'L to %r' % target))
+        # These should be files. Pick the one with the highest mtime and copy to
+        # the rest.
         # {(mtime, size): [index]}
         data_candidates = collections.defaultdict(list)
-        # Check the file at ff.
-        ts0 = TimeAndSize(self.InTier(ff, relpath))
-        data_candidates[ts0].append(ff)
-        # These should be files.
-        for i in xrange(ff+1, tcount):
+        for i in xrange(ff, tcount):
           if tps[i] != 'F':
-            fixes.append('Copy from %d to %d' % (ff, i))
+            ops.append(Copy(IT(ff), IT(i), tps[i]))
           else:
-            ts1 = TimeAndSize(self.InTier(i, relpath))
-            data_candidates[ts1].append(i)
+            ts = TimeAndSize(self.InTier(i, relpath))
+            data_candidates[ts].append(i)
         if len(data_candidates) > 1:
           data = data_candidates.items()
           data.sort(reverse=True)  # highest mtime first
-          froms = data[0][1]
-          tos = []
+          frm = min(data[0][1])  # pick highest tier out of those
           for _, indexes in data[1:]:
-            tos.extend(indexes)
-          fixes.append('Copy data from %s to %s' % (
-            FmtInts(froms), FmtInts(tos)))
+            for i in indexes:
+              ops.append(Copy(IT(frm), IT(i), 'FIXME'))
 
-      if fixes:
+      if ops:
         print '%s: %s' % (repr(relpath)[1:-1], tps)
-        for f in fixes:
-          print '  ', f
+        for op in ops:
+          print '  ', op
+          if go:
+            op.Run()
 
 
 def main(argv):
+  parser = optparse.OptionParser()
+  parser.add_option('-g', '--go', dest='go',
+                    action='store_true', default=False)
+
+  opts, args = parser.parse_args()
+
   config = open(TIER_CONFIG).read()
   tier = TierManager(config)
-  tier.CheckConsistency()
+
+  if not args:
+    print 'Missing command'
+    return 1
+
+  cmd = args[0]
+  if cmd == 'check':
+    tier.CheckConsistency(opts.go)
+  #elif cmd == 'ls':
+  #  tier.List()
+
 
 if __name__ == '__main__':
   sys.exit(main(sys.argv))
