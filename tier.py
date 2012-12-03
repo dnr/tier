@@ -247,6 +247,45 @@ class TierManager(object):
           if go:
             op.Run()
 
+  def List(self):
+    tcount = len(self.tiers)
+    full = self.FullMap()
+    full = full.items()
+    full.sort()
+    for relpath, bits in full:
+      tps = UnpackBits(bits, tcount)
+      c = None
+      ff = tps.find('F')
+      if ff < 0:
+        c = '?'
+      else:
+        c = str(ff)
+      print c, relpath
+
+  def Stats(self):
+    tcount = len(self.tiers)
+
+    files = [0] * (tcount + 1)
+    sizes = [0] * tcount
+
+    for relpath, bits in self.FullMap().iteritems():
+      tps = UnpackBits(bits, tcount)
+      ff = tps.find('F')
+      files[ff] += 1
+      if ff >= 0:
+        sizes[ff] += TimeAndSize(self.InTier(ff, relpath))[1]
+
+    fmt = '%-20s  %10s  %10s  %10s  %10s'
+    MB = 1024 * 1024
+    print fmt % ('tier', 'files', 'cm files', 'size (MB)', 'cm size')
+    for t in range(tcount):
+      cfiles = sum(files[0:t+1])
+      csize = sum(sizes[0:t+1])
+      print fmt % (self.tiers[t], files[t], cfiles,
+                   sizes[t] // MB, csize // MB)
+    if files[-1]:
+      print 'missing', files[-1]
+
 
 def main(argv):
   parser = optparse.OptionParser()
@@ -265,8 +304,10 @@ def main(argv):
   cmd = args[0]
   if cmd == 'check':
     tier.CheckConsistency(opts.go)
-  #elif cmd == 'ls':
-  #  tier.List()
+  elif cmd == 'ls':
+    tier.List()
+  elif cmd == 'stats':
+    tier.Stats()
 
 
 if __name__ == '__main__':
