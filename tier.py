@@ -55,20 +55,28 @@ def GetType(fn):
     return NONE
 
 def AllFilesInTree(t, relpaths):
+  # TODO: this function is a mess. rewrite it.
   assert t.endswith('/')
   if not relpaths:
     relpaths = ['']
   for relpath in relpaths:
-    for path, dirs, fns in os.walk(join(t, relpath)):
-      if TIER_IGNORE in fns:
-        dirs[:] = []
-        continue
-      assert path.startswith(t)
-      path = path[len(t):]
-      for fn in fns:
-        if TIER_BACKUP_INFIX not in fn:
-          fn = join(path, fn)
-          yield fn
+    fullpath = join(t, relpath)
+    tp = GetType(fullpath)
+    if ((tp == FILE or tp == LINK) and
+        relpath != TIER_IGNORE and
+        TIER_BACKUP_INFIX not in relpath):
+      yield relpath
+    else:
+      for path, dirs, fns in os.walk(fullpath):
+        if TIER_IGNORE in fns:
+          dirs[:] = []
+          continue
+        assert path.startswith(t)
+        path = path[len(t):]
+        for fn in fns:
+          if TIER_BACKUP_INFIX not in fn:
+            fn = join(path, fn)
+            yield fn
 
 def Fileprint(fn):
   CHUNK = 1024
