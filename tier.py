@@ -51,18 +51,21 @@ def GetType(fn):
   except OSError:
     return NONE
 
-def AllFilesInTree(t):
+def AllFilesInTree(t, relpaths):
   assert t.endswith('/')
-  for path, dirs, fns in os.walk(t):
-    if TIER_IGNORE in fns:
-      dirs[:] = []
-      continue
-    assert path.startswith(t)
-    path = path[len(t):]
-    for fn in fns:
-      if TIER_BACKUP_INFIX not in fn:
-        fn = join(path, fn)
-        yield fn
+  if not relpaths:
+    relpaths = ['']
+  for relpath in relpaths:
+    for path, dirs, fns in os.walk(join(t, relpath)):
+      if TIER_IGNORE in fns:
+        dirs[:] = []
+        continue
+      assert path.startswith(t)
+      path = path[len(t):]
+      for fn in fns:
+        if TIER_BACKUP_INFIX not in fn:
+          fn = join(path, fn)
+          yield fn
 
 def Fileprint(fn):
   CHUNK = 1024
@@ -179,8 +182,10 @@ class TierManager(object):
       tier index (-1 if not in any tier)
       relative path inside tier (original path if not in any tier)
     """
-    path = os.path.abspath(path)
+    path = os.path.realpath(path)
     for i, t in enumerate(self.tiers):
+      if t == path + '/':
+        return i, ''
       if path.startswith(t):
         return i, path[len(t):]
     return -1, path
@@ -188,24 +193,29 @@ class TierManager(object):
   def InTier(self, t, relpath):
     return self.tiers[t] + relpath
 
-  def FullMap(self):
+  def FullMap(self, args):
     """Returns:
       map from relative filename to packed types
     """
+    relpaths = []
+    for limit in args:
+      t, relpath = self.WhichTier(limit)
+      assert t >= 0, 'Not in any tier: %s' % relpath
+      relpaths.append(relpath)
     full = collections.defaultdict(int)
     for i, t in enumerate(self.tiers):
-      for f in AllFilesInTree(t):
+      for f in AllFilesInTree(t, relpaths):
         tp = GetType(join(t, f))
         full[f] |= (tp << (i * 2))
     return full
 
-  def CheckConsistency(self, go):
+  def CheckConsistency(self, args, go):
     tcount = len(self.tiers)
-    full = self.FullMap()
+    full = self.FullMap(args)
     full = full.items()
     full.sort()
     for relpath, bits in full:
-      IT = lambda t: self.InTier(t, relpath)
+      IT = lambda t: self.tiers[t] + relpath
       tps = UnpackBits(bits, tcount)
       ops = []
       # Find first file (most accessible copy). Above this should be links to
@@ -230,7 +240,7 @@ class TierManager(object):
           if tps[i] != 'F':
             ops.append(Copy(IT(ff), IT(i), tps[i]))
           else:
-            ts = TimeAndSize(self.InTier(i, relpath))
+            ts = TimeAndSize(IT(i))
             data_candidates[ts].append(i)
         if len(data_candidates) > 1:
           data = data_candidates.items()
@@ -247,9 +257,9 @@ class TierManager(object):
           if go:
             op.Run()
 
-  def List(self):
+  def List(self, args):
     tcount = len(self.tiers)
-    full = self.FullMap()
+    full = self.FullMap(args)
     full = full.items()
     full.sort()
     for relpath, bits in full:
@@ -262,13 +272,13 @@ class TierManager(object):
         c = str(ff)
       print c, relpath
 
-  def Stats(self):
+  def Stats(self, args):
     tcount = len(self.tiers)
 
     files = [0] * (tcount + 1)
     sizes = [0] * tcount
 
-    for relpath, bits in self.FullMap().iteritems():
+    for relpath, bits in self.FullMap(args).iteritems():
       tps = UnpackBits(bits, tcount)
       ff = tps.find('F')
       files[ff] += 1
@@ -301,13 +311,15 @@ def main(argv):
     print 'Missing command'
     return 1
 
-  cmd = args[0]
+  cmd = args.pop(0)
   if cmd == 'check':
-    tier.CheckConsistency(opts.go)
+    tier.CheckConsistency(args, opts.go)
   elif cmd == 'ls':
-    tier.List()
+    tier.List(args)
   elif cmd == 'stats':
-    tier.Stats()
+    tier.Stats(args)
+  else:
+    print 'Unknown command %r' % cmd
 
 
 if __name__ == '__main__':
