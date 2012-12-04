@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+__author__ = 'David Reiss <davidn@gmail.com>'
+
 import sys, os, stat, shutil, shlex, hashlib, collections, optparse, time
 join = os.path.join
 
