@@ -105,6 +105,9 @@ class Op(object):
   def Run(self):
     raise NotImplementedError
 
+  def Short(self):
+    return '?'
+
 
 class Symlink(Op):
   def __init__(self, dest, contents, was):
@@ -133,6 +136,9 @@ class Symlink(Op):
         raise
     os.rename(tmp, self.dest)
 
+  def Short(self):
+    return 'link'
+
 
 class Copy(Op):
   def __init__(self, src, dest, was):
@@ -160,6 +166,9 @@ class Copy(Op):
       else:
         raise
     os.rename(tmp, self.dest)
+
+  def Short(self):
+    return 'copy'
 
 
 class MissingFile(Op):
@@ -253,6 +262,8 @@ class TierManager(object):
         frm = min(bestindexes)  # pick highest tier out of those
         # Copy to all tiers that should have a file, that don't have the
         # matching file.
+        # TODO: when copying from 2 to 1 and 0, copy from 2 to 1, then 1 to 0,
+        # instead of 2 to 1 and 2 to 0. will probably be faster if 2 is nfs.
         for i in xrange(tff, tcount):
           if i not in bestindexes:
             ops.append(Copy(IT(frm), IT(i), tps[i]))
@@ -270,9 +281,11 @@ class TierManager(object):
               ops.append(Symlink(IT(i), IT(tff), 'L to %r' % target))
 
       if ops:
-        print '%s: %s' % (repr(relpath)[1:-1], tps)
+        shortdesc = ', '.join(op.Short() for op in ops)
+        print '%s: %s (%s)' % (repr(relpath)[1:-1], shortdesc, tps)
         for op in ops:
-          print '  ', op
+          if opts.verbose:
+            print '  ', op
           if opts.go:
             if opts.backup:
               MakeBackupLink(op.dest)
@@ -338,6 +351,7 @@ def main():
     return tier.Exec(sys.argv[2:])
 
   parser = optparse.OptionParser()
+  parser.add_option('-v', '--verbose', action='store_true')
   parser.add_option('-g', '--go', action='store_true')
   parser.add_option('-b', '--backup', action='store_true', default=True)
   parser.add_option('-n', '--no-backup', action='store_false', dest='backup')
