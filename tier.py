@@ -33,6 +33,7 @@ def TimeAndSize(fn):
   return int(st.st_mtime), st.st_size
 
 def MakeBackupLink(fn):
+  if not fn: return
   bk = fn + TIER_BACKUP_INFIX + global_run_id
   try:
     os.link(fn, bk)
@@ -83,7 +84,7 @@ def Fileprint(fn):
 
 class Op(object):
   def __init__(self):
-    pass
+    self.dest = None
 
   def __str__(self):
     return 'Abstract op'
@@ -97,6 +98,7 @@ class Op(object):
 
 class Symlink(Op):
   def __init__(self, dest, contents, was):
+    Op.__init__(self)
     self.dest = dest
     self.contents = contents
     self.was = was
@@ -110,7 +112,6 @@ class Symlink(Op):
         self.dest, self.contents, self.was)
 
   def Run(self):
-    MakeBackupLink(self.dest)
     tmp = self.dest + '.tmp'
     try:
       os.symlink(self.contents, tmp)
@@ -125,6 +126,7 @@ class Symlink(Op):
 
 class Copy(Op):
   def __init__(self, src, dest, was):
+    Op.__init__(self)
     self.src = src
     self.dest = dest
     self.was = was
@@ -138,7 +140,6 @@ class Copy(Op):
         self.src, self.dest, self.was)
 
   def Run(self):
-    MakeBackupLink(self.dest)
     tmp = self.dest + '.tmp'
     try:
       shutil.copy2(self.src, tmp)
@@ -153,6 +154,7 @@ class Copy(Op):
 
 class MissingFile(Op):
   def __init__(self, relpath, tps):
+    Op.__init__(self)
     self.relpath = relpath
     self.tps = tps
 
@@ -209,7 +211,7 @@ class TierManager(object):
         full[f] |= (tp << (i * 2))
     return full
 
-  def CheckConsistency(self, args, go):
+  def Check(self, args, opts):
     tcount = len(self.tiers)
     full = self.FullMap(args)
     full = full.items()
@@ -218,63 +220,71 @@ class TierManager(object):
       IT = lambda t: self.tiers[t] + relpath
       tps = UnpackBits(bits, tcount)
       ops = []
-      # Find first file (most accessible copy). Above this should be links to
-      # this, below this should be identical copies of this.
-      ff = tps.find('F')
-      if ff < 0:
+
+      # Choose target first file.
+      if opts.tier is None:
+        tff = tps.find('F')
+      else:
+        tff = opts.tier
+      assert 0 <= tff < tcount
+
+      # Find the most recent copy.
+      # {(mtime, size): [index]}
+      data_candidates = collections.defaultdict(list)
+      for i in xrange(0, tcount):
+        if tps[i] == 'F':
+          ts = TimeAndSize(IT(i))
+          data_candidates[ts].append(i)
+      if not data_candidates:
         ops.append(MissingFile(relpath, tps))
       else:
-        # These should be links to the file at ff.
-        for i in xrange(0, ff):
+        best = max(data_candidates)  # highest mtime
+        bestindexes = data_candidates[best]
+        frm = min(bestindexes)  # pick highest tier out of those
+        # Copy to all tiers that should have a file, that don't have the
+        # matching file.
+        for i in xrange(tff, tcount):
+          if i not in bestindexes:
+            ops.append(Copy(IT(frm), IT(i), tps[i]))
+
+        # These should be links to the file at tff.
+        # Note that the copying happens before the linking, in case we need to
+        # copy a file to a lower tier and then replace it to a link at the same
+        # time.
+        for i in xrange(0, tff):
           if tps[i] != 'L':
-            ops.append(Symlink(IT(i), IT(ff), tps[i]))
+            ops.append(Symlink(IT(i), IT(tff), tps[i]))
           else:
             target = os.readlink(IT(i))
-            if target != IT(ff):
-              ops.append(Symlink(IT(i), IT(ff), 'L to %r' % target))
-        # These should be files. Pick the one with the highest mtime and copy to
-        # the rest.
-        # {(mtime, size): [index]}
-        data_candidates = collections.defaultdict(list)
-        for i in xrange(ff, tcount):
-          if tps[i] != 'F':
-            ops.append(Copy(IT(ff), IT(i), tps[i]))
-          else:
-            ts = TimeAndSize(IT(i))
-            data_candidates[ts].append(i)
-        if len(data_candidates) > 1:
-          data = data_candidates.items()
-          data.sort(reverse=True)  # highest mtime first
-          frm = min(data[0][1])  # pick highest tier out of those
-          for _, indexes in data[1:]:
-            for i in indexes:
-              ops.append(Copy(IT(frm), IT(i), 'FIXME'))
+            if target != IT(tff):
+              ops.append(Symlink(IT(i), IT(tff), 'L to %r' % target))
 
       if ops:
         print '%s: %s' % (repr(relpath)[1:-1], tps)
         for op in ops:
           print '  ', op
-          if go:
+          if opts.go:
+            if opts.backup:
+              MakeBackupLink(op.dest)
             op.Run()
 
-  def List(self, args):
+  def List(self, args, opts):
     tcount = len(self.tiers)
     full = self.FullMap(args)
     full = full.items()
     full.sort()
     for relpath, bits in full:
       tps = UnpackBits(bits, tcount)
-      c = None
+      t = None
       ff = tps.find('F')
       if ff < 0:
-        c = '?'
+        t = '?'
       else:
-        c = str(ff)
+        t = str(ff)
       print c, relpath
 
-  def Stats(self, args):
+  def Stats(self, args, opts):
     tcount = len(self.tiers)
-
     files = [0] * (tcount + 1)
     sizes = [0] * tcount
 
@@ -287,20 +297,28 @@ class TierManager(object):
 
     fmt = '%-20s  %10s  %10s  %10s  %10s'
     MB = 1024 * 1024
-    print fmt % ('tier', 'files', 'cm files', 'size (MB)', 'cm size')
+    print fmt % ('tier', 'files', 'tot files', 'size (MB)', 'tot size')
     for t in range(tcount):
-      cfiles = sum(files[0:t+1])
-      csize = sum(sizes[0:t+1])
-      print fmt % (self.tiers[t], files[t], cfiles,
-                   sizes[t] // MB, csize // MB)
+      tfiles = sum(files[0:t+1])
+      tsize = sum(sizes[0:t+1])
+      print fmt % (self.tiers[t], files[t], tfiles,
+                   sizes[t] // MB, tsize // MB)
     if files[-1]:
       print 'missing', files[-1]
 
 
 def main(argv):
   parser = optparse.OptionParser()
-  parser.add_option('-g', '--go', dest='go',
-                    action='store_true', default=False)
+  parser.add_option('-g', '--go', action='store_true')
+  parser.add_option('-b', '--backup', action='store_true', default=True)
+  parser.add_option('-n', '--no-backup', action='store_false', dest='backup')
+
+  # Destination tier for sync.
+  parser.add_option('-t', '--tier', type='int', default=None)
+  parser.add_option('-0', const=0, dest='tier', action='store_const')
+  parser.add_option('-1', const=1, dest='tier', action='store_const')
+  parser.add_option('-2', const=2, dest='tier', action='store_const')
+  parser.add_option('-3', const=3, dest='tier', action='store_const')
 
   opts, args = parser.parse_args()
 
@@ -312,12 +330,12 @@ def main(argv):
     return 1
 
   cmd = args.pop(0)
-  if cmd == 'check':
-    tier.CheckConsistency(args, opts.go)
+  if cmd == 'check' or cmd == 'sync':
+    tier.Check(args, opts)
   elif cmd == 'ls':
-    tier.List(args)
+    tier.List(args, opts)
   elif cmd == 'stats':
-    tier.Stats(args)
+    tier.Stats(args, opts)
   else:
     print 'Unknown command %r' % cmd
 
