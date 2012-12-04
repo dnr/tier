@@ -281,7 +281,7 @@ class TierManager(object):
         t = '?'
       else:
         t = str(ff)
-      print c, relpath
+      print t, relpath
 
   def Stats(self, args, opts):
     tcount = len(self.tiers)
@@ -306,8 +306,27 @@ class TierManager(object):
     if files[-1]:
       print 'missing', files[-1]
 
+  def Exec(self, argv):
+    cwd = os.getcwd()
+    t, relpath = self.WhichTier(cwd)
+    assert t >= 0, 'Not in any tier: %s' % relpath
+    mret = 0
+    for t in range(len(self.tiers)):
+      path = self.InTier(t, relpath)
+      print '====== in', path
+      os.chdir(path)
+      ret = os.spawnvp(os.P_WAIT, argv[0], argv)
+      mret = max(mret, ret)
+    return mret
 
-def main(argv):
+
+def main():
+  config = open(TIER_CONFIG).read()
+  tier = TierManager(config)
+
+  if len(sys.argv) > 1 and sys.argv[1] == 'exec':
+    return tier.Exec(sys.argv[2:])
+
   parser = optparse.OptionParser()
   parser.add_option('-g', '--go', action='store_true')
   parser.add_option('-b', '--backup', action='store_true', default=True)
@@ -321,9 +340,6 @@ def main(argv):
   parser.add_option('-3', const=3, dest='tier', action='store_const')
 
   opts, args = parser.parse_args()
-
-  config = open(TIER_CONFIG).read()
-  tier = TierManager(config)
 
   if not args:
     print 'Missing command'
@@ -341,4 +357,4 @@ def main(argv):
 
 
 if __name__ == '__main__':
-  sys.exit(main(sys.argv))
+  sys.exit(main())
