@@ -159,7 +159,7 @@ class Copy(Op):
     tmp = self.dest + '.tmp'
     try:
       shutil.copy2(self.src, tmp)
-    except OSError, e:
+    except (OSError, IOError), e:
       if e.errno == 2:
         os.makedirs(os.path.dirname(tmp))
         shutil.copy2(self.src, tmp)
