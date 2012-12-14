@@ -110,9 +110,11 @@ class Op(object):
 
 
 class Symlink(Op):
-  def __init__(self, dest, contents, was):
+  def __init__(self, di, dest, ci, contents, was):
     Op.__init__(self)
+    self.di = di
     self.dest = dest
+    self.ci = ci
     self.contents = contents
     self.was = was
 
@@ -121,8 +123,8 @@ class Symlink(Op):
         self.dest, self.contents, self.was)
 
   def __repr__(self):
-    return 'Symlink(%r, %r, %r)' % (
-        self.dest, self.contents, self.was)
+    return 'Symlink(%r, %r, %r, %r, %r)' % (
+        self.di, self.dest, self.ci, self.contents, self.was)
 
   def Run(self):
     tmp = self.dest + '.tmp'
@@ -137,13 +139,15 @@ class Symlink(Op):
     os.rename(tmp, self.dest)
 
   def Short(self):
-    return 'link'
+    return '%d -> %d' % (self.di + 1, self.ci + 1)  # ui is 1-based
 
 
 class Copy(Op):
-  def __init__(self, src, dest, was):
+  def __init__(self, si, src, di, dest, was):
     Op.__init__(self)
+    self.si = si
     self.src = src
+    self.di = di
     self.dest = dest
     self.was = was
 
@@ -152,8 +156,8 @@ class Copy(Op):
         self.src, self.dest, self.was)
 
   def __repr__(self):
-    return 'Copy(%r, %r, %r)' % (
-        self.src, self.dest, self.was)
+    return 'Copy(%r, %r, %r, %r, %r)' % (
+        self.si, self.src, self.di, self.dest, self.was)
 
   def Run(self):
     tmp = self.dest + '.tmp'
@@ -168,7 +172,7 @@ class Copy(Op):
     os.rename(tmp, self.dest)
 
   def Short(self):
-    return 'copy'
+    return '%d ==> %d' % (self.si + 1, self.di + 1)  # ui is 1-based
 
 
 class MissingFile(Op):
@@ -230,7 +234,7 @@ class TierManager(object):
         full[f] |= (tp << (i * 2))
     return full
 
-  def Check(self, args, opts):
+  def Sync(self, args, opts):
     tcount = len(self.tiers)
     full = self.FullMap(args)
     full = full.items()
@@ -244,8 +248,8 @@ class TierManager(object):
       if opts.tier is None:
         tff = tps.find('F')
       else:
-        tff = opts.tier
-      assert 0 <= tff < tcount
+        tff = opts.tier - 1  # ui is 1-based
+      assert 0 <= tff < tcount, 'tier out of range or missing file'
 
       # Find the most recent copy.
       # {(mtime, size): [index]}
@@ -266,7 +270,7 @@ class TierManager(object):
         # instead of 2 to 1 and 2 to 0. will probably be faster if 2 is nfs.
         for i in xrange(tff, tcount):
           if i not in bestindexes:
-            ops.append(Copy(IT(frm), IT(i), tps[i]))
+            ops.append(Copy(frm, IT(frm), i, IT(i), tps[i]))
 
         # These should be links to the file at tff.
         # Note that the copying happens before the linking, in case we need to
@@ -274,15 +278,15 @@ class TierManager(object):
         # time.
         for i in xrange(0, tff):
           if tps[i] != 'L':
-            ops.append(Symlink(IT(i), IT(tff), tps[i]))
+            ops.append(Symlink(i, IT(i), tff, IT(tff), tps[i]))
           else:
             target = os.readlink(IT(i))
             if target != IT(tff):
-              ops.append(Symlink(IT(i), IT(tff), 'L to %r' % target))
+              ops.append(Symlink(i, IT(i), tff, IT(tff), 'L to %r' % target))
 
       if ops:
         shortdesc = ', '.join(op.Short() for op in ops)
-        print '%s: %s (%s)' % (repr(relpath)[1:-1], shortdesc, tps)
+        print '%s  %s  %s' % (tps, repr(relpath)[1:-1], shortdesc)
         for op in ops:
           if opts.verbose:
             print '  ', op
@@ -303,7 +307,7 @@ class TierManager(object):
       if ff < 0:
         t = '?'
       else:
-        t = str(ff)
+        t = str(ff + 1)  # ui is 1-based
       print t, relpath
 
   def Stats(self, args, opts):
@@ -324,7 +328,7 @@ class TierManager(object):
     for t in range(tcount):
       tfiles = sum(files[0:t+1])
       tsize = sum(sizes[0:t+1])
-      print fmt % (self.tiers[t], files[t], tfiles,
+      print fmt % (self.tiers[t].rstrip('/'), files[t], tfiles,
                    sizes[t] // MB, tsize // MB)
     if files[-1]:
       print 'missing', files[-1]
@@ -336,11 +340,21 @@ class TierManager(object):
     mret = 0
     for t in range(len(self.tiers)):
       path = self.InTier(t, relpath)
-      print '====== in', path
+      print '====== in', path.rstrip('/')
       os.chdir(path)
       ret = os.spawnvp(os.P_WAIT, argv[0], argv)
+      if ret:
+        print '====== returned', ret
       mret = max(mret, ret)
     return mret
+
+
+def PopArg(args, *cmds):
+  if args and args[0] in cmds:
+    args.pop(0)
+    return True
+  else:
+    return False
 
 
 def main():
@@ -349,6 +363,8 @@ def main():
 
   if len(sys.argv) > 1 and sys.argv[1] == 'exec':
     return tier.Exec(sys.argv[2:])
+  elif len(sys.argv) > 1 and sys.argv[1] in ('mv', 'rm'):
+    return tier.Exec(sys.argv[1:])
 
   parser = optparse.OptionParser()
   parser.add_option('-v', '--verbose', action='store_true')
@@ -358,26 +374,20 @@ def main():
 
   # Destination tier for sync.
   parser.add_option('-t', '--tier', type='int', default=None)
-  parser.add_option('-0', const=0, dest='tier', action='store_const')
   parser.add_option('-1', const=1, dest='tier', action='store_const')
   parser.add_option('-2', const=2, dest='tier', action='store_const')
   parser.add_option('-3', const=3, dest='tier', action='store_const')
+  parser.add_option('-4', const=4, dest='tier', action='store_const')
 
   opts, args = parser.parse_args()
 
-  if not args:
-    print 'Missing command'
-    return 1
+  func = tier.Sync
+  if PopArg(args, 'ls'):
+    func = tier.List
+  elif PopArg(args, 'stat', 'stats'):
+    func = tier.Stats
 
-  cmd = args.pop(0)
-  if cmd == 'check' or cmd == 'sync':
-    tier.Check(args, opts)
-  elif cmd == 'ls':
-    tier.List(args, opts)
-  elif cmd == 'stats':
-    tier.Stats(args, opts)
-  else:
-    print 'Unknown command %r' % cmd
+  func(args, opts)
 
 
 if __name__ == '__main__':
