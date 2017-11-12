@@ -21,7 +21,7 @@ def UnpackBits(bits, tiers):
   for t in range(tiers):
     tp = (bits & (3 << (t * 2))) >> (t * 2)
     if tp == NONE:
-      out += 'N'
+      out += '-'
     elif tp == FILE:
       out += 'F'
     elif tp == LINK:
@@ -249,7 +249,7 @@ class TierManager(object):
         tff = tps.find('F')
       else:
         tff = opts.tier - 1  # ui is 1-based
-      assert 0 <= tff < tcount, 'tier out of range or missing file'
+      assert 0 <= tff < tcount, 'tier out of range or missing file: ' + relpath
 
       # Find the most recent copy.
       # {(mtime, size): [index]}
