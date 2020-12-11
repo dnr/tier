@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 __author__ = 'David Reiss <davidn@gmail.com>'
 
@@ -130,7 +130,7 @@ class Symlink(Op):
     tmp = self.dest + '.tmp'
     try:
       os.symlink(self.contents, tmp)
-    except OSError, e:
+    except OSError as e:
       if e.errno == 2:
         os.makedirs(os.path.dirname(tmp))
         os.symlink(self.contents, tmp)
@@ -163,7 +163,7 @@ class Copy(Op):
     tmp = self.dest + '.tmp'
     try:
       shutil.copy2(self.src, tmp)
-    except (OSError, IOError), e:
+    except (OSError, IOError) as e:
       if e.errno == 2:
         os.makedirs(os.path.dirname(tmp))
         shutil.copy2(self.src, tmp)
@@ -237,7 +237,7 @@ class TierManager(object):
   def Sync(self, args, opts):
     tcount = len(self.tiers)
     full = self.FullMap(args)
-    full = full.items()
+    full = list(full.items())
     full.sort()
     for relpath, bits in full:
       IT = lambda t: self.tiers[t] + relpath
@@ -254,7 +254,7 @@ class TierManager(object):
       # Find the most recent copy.
       # {(mtime, size): [index]}
       data_candidates = collections.defaultdict(list)
-      for i in xrange(0, tcount):
+      for i in range(0, tcount):
         if tps[i] == 'F':
           ts = TimeAndSize(IT(i))
           data_candidates[ts].append(i)
@@ -268,7 +268,7 @@ class TierManager(object):
         # matching file.
         # TODO: when copying from 2 to 1 and 0, copy from 2 to 1, then 1 to 0,
         # instead of 2 to 1 and 2 to 0. will probably be faster if 2 is nfs.
-        for i in xrange(tff, tcount):
+        for i in range(tff, tcount):
           if i not in bestindexes:
             ops.append(Copy(frm, IT(frm), i, IT(i), tps[i]))
 
@@ -276,7 +276,7 @@ class TierManager(object):
         # Note that the copying happens before the linking, in case we need to
         # copy a file to a lower tier and then replace it to a link at the same
         # time.
-        for i in xrange(0, tff):
+        for i in range(0, tff):
           if tps[i] != 'L':
             ops.append(Symlink(i, IT(i), tff, IT(tff), tps[i]))
           else:
@@ -286,10 +286,10 @@ class TierManager(object):
 
       if ops:
         shortdesc = ', '.join(op.Short() for op in ops)
-        print '%s  %s  %s' % (tps, repr(relpath)[1:-1], shortdesc)
+        print('%s  %s  %s' % (tps, repr(relpath)[1:-1], shortdesc))
         for op in ops:
           if opts.verbose:
-            print '  ', op
+            print('  ', op)
           if opts.go:
             if opts.backup:
               MakeBackupLink(op.dest)
@@ -298,7 +298,7 @@ class TierManager(object):
   def List(self, args, opts):
     tcount = len(self.tiers)
     full = self.FullMap(args)
-    full = full.items()
+    full = list(full.items())
     full.sort()
     for relpath, bits in full:
       tps = UnpackBits(bits, tcount)
@@ -308,14 +308,14 @@ class TierManager(object):
         t = '?'
       else:
         t = str(ff + 1)  # ui is 1-based
-      print t, relpath
+      print(t, relpath)
 
   def Stats(self, args, opts):
     tcount = len(self.tiers)
     files = [0] * (tcount + 1)
     sizes = [0] * tcount
 
-    for relpath, bits in self.FullMap(args).iteritems():
+    for relpath, bits in self.FullMap(args).items():
       tps = UnpackBits(bits, tcount)
       ff = tps.find('F')
       files[ff] += 1
@@ -324,14 +324,14 @@ class TierManager(object):
 
     fmt = '%-20s  %10s  %10s  %10s  %10s'
     MB = 1024 * 1024
-    print fmt % ('tier', 'files', 'tot files', 'size (MB)', 'tot size')
+    print(fmt % ('tier', 'files', 'tot files', 'size (MB)', 'tot size'))
     for t in range(tcount):
       tfiles = sum(files[0:t+1])
       tsize = sum(sizes[0:t+1])
-      print fmt % (self.tiers[t].rstrip('/'), files[t], tfiles,
-                   sizes[t] // MB, tsize // MB)
+      print(fmt % (self.tiers[t].rstrip('/'), files[t], tfiles,
+                   sizes[t] // MB, tsize // MB))
     if files[-1]:
-      print 'missing', files[-1]
+      print('missing', files[-1])
 
   def Exec(self, argv):
     cwd = os.getcwd()
@@ -340,11 +340,11 @@ class TierManager(object):
     mret = 0
     for t in range(len(self.tiers)):
       path = self.InTier(t, relpath)
-      print '====== in', path.rstrip('/')
+      print('====== in', path.rstrip('/'))
       os.chdir(path)
       ret = os.spawnvp(os.P_WAIT, argv[0], argv)
       if ret:
-        print '====== returned', ret
+        print('====== returned', ret)
       mret = max(mret, ret)
     return mret
 
